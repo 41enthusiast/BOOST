@@ -10,8 +10,6 @@ import numpy as np
 import torch.optim as optim
 from torch import Tensor
 
-import os
-
 from datasets import load_dataset
 from pytorch_ood.model import WideResNet
 from pytorch_ood.utils import OODMetrics, ToUnknown, fix_random_seed, is_unknown
@@ -28,9 +26,8 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from torchmetrics.functional.classification import binary_auroc
 
 # from kaokore_ds import *
-# from pacs_ds import *
+from pacs_ds import *
 # from wikiart_ds import *
-from wikiart_emotions_ds import *
 
 from utils import *
 from stclf_model import *
@@ -45,7 +42,7 @@ device = 'cuda'
 model = torch.hub.load('pytorch/vision:v0.10.0', 'wide_resnet50_2', pretrained=True).to(device)
 
 MODEL_TYPE = ['simple_odin', 'stsaclf', 'contrastive'][1]
-RUN = 30
+RUN = 29
 SAMPLER_TYPE = ['odin', 'stratified', 'random'][0]
 
 
@@ -63,7 +60,7 @@ device = 'cuda'
 batch_sz = BSZ
 
 epochs = 50
-LR = 0.08
+LR = 0.00008
 momentum = 0.9
 WD = 0.0004
 
@@ -120,10 +117,6 @@ wandb.init(project='ood_art_tests_v2',
              'optimizer': optim_name,
            })
 
-#housekeeping code
-checkpoint_path = f'saves/ood_art_tests_v2/experiment_{RUN}'
-if not os.path.exists(checkpoint_path):
-    os.makedirs(checkpoint_path, exist_ok = True)
 
 #TRAINING LOOP
 best_stats = ''
@@ -133,11 +126,13 @@ loss_avg = 0.0
 temps = []
 for epoch in range(epochs):
   art_model.train()
-  for i, batch_indices in enumerate(batch_sampler):
-    batch_x, batch_y = torch.stack([dataset[idx][0] for idx in batch_indices]), torch.tensor([dataset[idx][1] for idx in batch_indices])
-    x,y = batch_x.cuda(), batch_y.cuda()
-  # for x, y, _ in train_loader_out:
-  #   x, y = x.to(device), y.to(device)
+  # for i, batch_indices in enumerate(batch_sampler):
+  #   batch_x, batch_y = torch.stack([dataset[idx][0] for idx in batch_indices]), torch.tensor([dataset[idx][1] for idx in batch_indices])
+  #   x,y = batch_x.cuda(), batch_y.cuda()
+  # for x, xs, y in train_loader_ws:
+  #   x, xs, y = x.to(device), xs.to(device), y.to(device)
+  for x, y in train_loader_out:
+    x, y = x.to(device), y.to(device)
     if MODEL_TYPE == 'simple_odin':
       out = art_model(x)
     elif MODEL_TYPE == 'stsaclf':
@@ -159,7 +154,7 @@ for epoch in range(epochs):
   all_preds = []
   all_outputs = []
   with torch.no_grad():
-      for inputs, labels, _ in test_loader_out:
+      for inputs, labels in test_loader_out:
           if MODEL_TYPE == 'simple_odin':
             outputs = art_model(inputs.cuda())
             all_outputs.append(outputs[0])
@@ -198,44 +193,39 @@ for epoch in range(epochs):
   
   #class wise metrics
   all_preds, all_labels = np.array(all_preds), np.array(all_labels)
-#   kaokore_status_class_names = {0: 'noble', 1: 'warrior', 2: 'incarnation', 3: 'commoner'}
-  print(class_names.keys())
+  kaokore_status_class_names = class_names#{0: 'noble', 1: 'warrior', 2: 'incarnation', 3: 'commoner'}
   cls_metrics = {'accuracy':{}, 'f1':{}, 'precision':{}, 'recall':{},
                  'auroc':{}, 'fpr95': {}}
   for cls in set(all_labels):
-    cls = int(cls)
-    
     lbls = np.where(all_labels == cls, np.ones_like(all_labels), np.zeros_like(all_labels))
     preds = np.where(all_preds == cls, np.ones_like(all_preds), np.zeros_like(all_preds))  
-    cls_metrics['accuracy'][class_names[cls]] = accuracy_score(lbls, preds)
-    cls_metrics['f1'][class_names[cls]] = f1_score(lbls, preds)
-    cls_metrics['precision'][class_names[cls]] = precision_score(lbls, preds)
-    cls_metrics['recall'][class_names[cls]] = recall_score(lbls, preds)
+    cls_metrics['accuracy'][kaokore_status_class_names[cls]] = accuracy_score(lbls, preds)
+    cls_metrics['f1'][kaokore_status_class_names[cls]] = f1_score(lbls, preds)
+    cls_metrics['precision'][kaokore_status_class_names[cls]] = precision_score(lbls, preds)
+    cls_metrics['recall'][kaokore_status_class_names[cls]] = recall_score(lbls, preds)
     
     #this forces the OvR based OOD metrics to be calculated - may not be a great idea
-    cls_metrics['auroc'][class_names[cls]] = binary_auroc(all_outputs[:,cls], Tensor(lbls).int().to(device))
-    cls_metrics['fpr95'][class_names[cls]] = fpr_at_tpr(all_outputs[:,cls], Tensor(lbls).int().to(device))
+    cls_metrics['auroc'][kaokore_status_class_names[cls]] = binary_auroc(all_outputs[:,cls], Tensor(lbls).int().to(device))
+    cls_metrics['fpr95'][kaokore_status_class_names[cls]] = fpr_at_tpr(all_outputs[:,cls], Tensor(lbls).int().to(device))
     
   for metric in cls_metrics.keys():
     for cls in cls_metrics[metric].keys():
       wandb.log({f'{metric}_{cls}': cls_metrics[metric][cls]*100, 'epoch': epoch})
 
   print('Saving model and sampling weights')
-  torch.save(art_model.state_dict(), f'{checkpoint_path}/model_{MODEL_TYPE}_{SAMPLER_TYPE}_{epoch}.pth')
+  torch.save(art_model.state_dict(), f'saves/ood_art_tests_v2/experiment_{RUN}/model_{MODEL_TYPE}_{SAMPLER_TYPE}_{epoch}.pth')
   if best_acc == accuracy:
-    torch.save(art_model.state_dict(), f'{checkpoint_path}/best_model_{MODEL_TYPE}_{SAMPLER_TYPE}.pth')
+    torch.save(art_model.state_dict(), f'saves/ood_art_tests_v2/experiment_{RUN}/best_model_{MODEL_TYPE}_{SAMPLER_TYPE}.pth')
    
   
 
   if SAMPLER_TYPE == 'odin':
-    
-    
-    # torch.save( batch_sampler.train_sampling_probs, f'{checkpoint_path}/sampler_{SAMPLER_TYPE}_{AGGR_MODE}_{epoch}.pt')
+    # torch.save( batch_sampler.train_sampling_probs, f'saves/ood_art_tests_v2/experiment_{RUN}/sampler_{SAMPLER_TYPE}_{AGGR_MODE}_{epoch}.pt')
     
     # visualization of results
     
     if epoch %5 == 0:
-      temperature *= 5
+      temperature *= 8
       batch_sampler.update_local(art_model, temperature)
       # batch_sampler.temperature = cosine_annealing(epoch, len(train_dataset)//batch_sz, 0, 1000)
       temps.append(temperature)

@@ -95,17 +95,15 @@ class Kaokore(Dataset):
 
         image_filepath = os.path.join(self.root, 'images_256', image_filename)
         image = image_loader(image_filepath)
-        if self.split == 'train':
-          stylized_filepath = os.path.join('class_styled_kaokore/allinone', image_filename)
-          stylized = image_loader(stylized_filepath)
+        # if self.split == 'train':
+        #   stylized_filepath = os.path.join('class_styled_kaokore/allinone', image_filename)
+        #   stylized = image_loader(stylized_filepath)
         if self.transform is not None:
             image = self.transform(image)
-            if self.split == 'train':
-              stylized = self.transform(stylized)
-        if self.split == 'train':
-          return image, stylized, label
-        else:
-          return image, label
+            # if self.split == 'train':
+            #   stylized = self.transform(stylized)
+        
+        return image, label, index
     
 
 # def make_stratified_
@@ -122,13 +120,15 @@ def make_kaokore_df(dset: Kaokore):
 #hyperparameters setup
 split_pct = 0.5
 label_type = 'status'
-BSZ = 32
+BSZ = 8
 trans = WideResNet.transform_for("cifar10-pt")
 norm_std = WideResNet.norm_std_for("cifar10-pt")
 if label_type == 'status':
   num_classes = 4
+  class_names = {0: 'noble', 1: 'warrior', 2: 'incarnation', 3: 'commoner'}
 else:
   num_classes = 2
+  class_names = {0: 'male', 1: 'female'}
 
 # prepare dataset with pretraining dataset statistics
 train_dataset = Kaokore(os.path.join('kaokore','kaokore'), 'train', label_type, trans, 'known')
@@ -142,7 +142,7 @@ test_dl = DataLoader(test_dataset, batch_size = BSZ)
 num_images = len(train_dataset)
 sum_channels = torch.zeros(3)
 sum_squares_channels = torch.zeros(3)
-for image, style, y in train_dl:
+for image, y, _ in train_dl:
     sum_channels += torch.sum(image, dim=(0, 2, 3))  # Sum across height and width dimensions
     sum_squares_channels += torch.sum(image ** 2, dim=(0, 2, 3))  # Sum of squares across height and width dimensions
 mean_channels = sum_channels / (num_images * train_dataset[0][0].shape[1] * train_dataset[0][0].shape[2])
@@ -169,7 +169,7 @@ test_loader_out = DataLoader(test_dataset, batch_size = BSZ)
 
 if __name__ == '__main__':
   print(train_dataset.count_dict, test_dataset.count_dict)
-  for x, xs, y in train_loader_out:
+  for x, y, _ in train_loader_out:
     break
-  for x, y in test_loader_out:
+  for x, y, _ in test_loader_out:
     break

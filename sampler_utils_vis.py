@@ -17,7 +17,7 @@ from kaokore_ds import *
 from stclf_model import *
 
 #with and without style transfer
-AUG_MODE = ['ST', 'VA'][1]
+# AUG_MODE = ['ST', 'VA'][1]
 AGGR_MODE = ['Aggr','Indv','Both'][2]
 
 class OdinSamplerRB(torch.utils.data.Sampler):
@@ -51,8 +51,7 @@ class OdinSamplerRB(torch.utils.data.Sampler):
         ):
         """
         Functional version of ODIN.
-
-        :param model: module to backpropagate through
+        
         :param x: sample to preprocess
         :param y: the label :math:`\\hat{y}` which is used to evaluate the loss. If none is given, the models
             prediction will be used
@@ -107,7 +106,7 @@ class OdinSamplerRB(torch.utils.data.Sampler):
         if mode == True:
             return x_hat
 
-    def predict_confidence_probs(self, x: Tensor, x_s: Tensor, y: Tensor, mode) -> Tensor:
+    def predict_confidence_probs(self, x: Tensor, y: Tensor, mode) -> Tensor:
         """
         Calculates softmax outlier scores on ODIN pre-processed inputs.
 
@@ -130,17 +129,52 @@ class OdinSamplerRB(torch.utils.data.Sampler):
         if mode == True:
             if MODEL_TYPE == 'simple_odin':
                 results = self.model(x_hat).softmax(dim=1)
-                aug_results = self.model(x_s).softmax(dim=1)
+                # aug_results = self.model(x_s).softmax(dim=1)
             elif MODEL_TYPE == 'stsaclf':
                 results = self.model(x_hat)[0].softmax(dim=1)
-                aug_results = self.model(x_s)[0].softmax(dim=1)
+                # aug_results = self.model(x_s)[0].softmax(dim=1)
             
             #choosing to keep original or transformation - simple strat
-            if AUG_MODE == 'ST':
-                results = torch.where(results>aug_results, results, aug_results)
+            # if AUG_MODE == 'ST':
+            #     results = torch.where(results>aug_results, results, aug_results)
             
             confidence = torch.tensor(results).max(dim=1).values
             return confidence
+        
+    def predict_confidence_probs_inds(self, x: Tensor, y: Tensor, mode) -> Tensor:
+        """
+        Calculates softmax outlier scores on ODIN pre-processed inputs.
+
+        :param x, x_s: input tensors
+        :param y: output tensor
+        :param mode: boolean to predict the confidence probabilities or not
+        :return: outlier scores for each sample
+        """
+
+        x_hat = self.odin_preprocessing(
+            x=x,
+            y=y,
+            eps=self.step_sz,
+            criterion=self.loss,
+            temperature=self.temperature,
+            norm_std=self.norm_std,
+            mode = mode
+        )
+        
+        if mode == True:
+            if MODEL_TYPE == 'simple_odin':
+                results = self.model(x_hat).softmax(dim=1)
+                # aug_results = self.model(x_s).softmax(dim=1)
+            elif MODEL_TYPE == 'stsaclf':
+                results = self.model(x_hat)[0].softmax(dim=1)
+                # aug_results = self.model(x_s)[0].softmax(dim=1)
+            
+            #choosing to keep original or transformation - simple strat
+            # if AUG_MODE == 'ST':
+            #     results = torch.where(results>aug_results, results, aug_results)
+            
+            confidence, inds = torch.tensor(results).max(dim=1)
+            return confidence, inds
 
     def update_local(self, model, temperature = 1):
         n = len(self.data_source)
@@ -154,20 +188,18 @@ class OdinSamplerRB(torch.utils.data.Sampler):
         
         for i in range(0, n, self.batch_size):
             #print('going for new batch', len(indices))
-            x,y, x_s = [], [], []
+            x,y, = [], []
             seed_idxs = self.old_indices[i:i+self.batch_size]
 
             for idx in seed_idxs:
               x.append(self.data_source[idx][0])
-              x_s.append(self.data_source[idx][1])
-              y.append(self.data_source[idx][2])
+              y.append(self.data_source[idx][1])
 
             if x == [] or y == []:
               print(seed_idxs, i)
             x = torch.stack(x).to('cuda')
-            x_s = torch.stack(x_s).to('cuda')
             y  = torch.tensor(y).to('cuda')
-            self.predict_confidence_probs(x, x_s, y, False)
+            self.predict_confidence_probs(x, y, False)
             
             
             
@@ -190,13 +222,11 @@ class OdinSamplerRB(torch.utils.data.Sampler):
 
             for idx in seed_idxs:
               x.append(self.data_source[idx][0])
-              x_s.append(self.data_source[idx][1])
-              y.append(self.data_source[idx][2])
+              y.append(self.data_source[idx][1])
               
             x = torch.stack(x).to('cuda')
-            x_s = torch.stack(x_s).to('cuda')
             y  = torch.tensor(y).to('cuda')
-            scores = self.predict_confidence_probs(x, x_s, y, True)
+            scores = self.predict_confidence_probs(x, y, True)
             all_y.append(y)
             all_scores.append(scores)
 
@@ -211,17 +241,15 @@ class OdinSamplerRB(torch.utils.data.Sampler):
         print('Iterating through the dataset')
         self.count_dict_new.append({i:0 for i in set(self.data_source.labels)})
         for i in range(0, n, self.batch_size):
-            x,y, x_s = [], [], []
+            x,y = [], []
             seed_idxs = old_indices[i:i+self.batch_size]
 
             for idx in seed_idxs:
               #x.append(F.interpolate(self.data_source[idx][0], size = 32))
               x.append(self.data_source[idx][0])
-              x_s.append(self.data_source[idx][1])
-              y.append(self.data_source[idx][2])
+              y.append(self.data_source[idx][1])
             
             x = torch.stack(x).to('cuda')
-            x_s = torch.stack(x_s).to('cuda')
             y  = torch.tensor(y).to('cuda')
               
             probs = all_scores[seed_idxs]
@@ -269,7 +297,7 @@ def get_class_distribution(dataloader_obj, dataset_obj, split):
     count_dict = {i: 0 for i in set(dataset_obj.labels)}
     
     if split == 'train':
-        for _, __, lbl in dataloader_obj:
+        for _, lbl in dataloader_obj:
             for l in lbl:
                 count_dict[l.item()] += 1
     else:
@@ -300,7 +328,7 @@ weighted_train_sampler = WeightedRandomSampler(weights = class_weights[train_dat
                                             replacement = True)
 
 #random shuffling
-BSZ = 32
+BSZ = 8
 train_loader_rs = DataLoader(dataset = train_dataset, shuffle = False, batch_size = BSZ,
                             sampler = train_sampler)
 train_loader_ws = DataLoader(dataset = train_dataset, shuffle = False, batch_size = BSZ,
@@ -311,7 +339,7 @@ print(get_class_distribution(train_loader_ws, train_dataset, 'train'))
 
 print('Making the ODIN sampler')
 temperature = 1
-dataset = train_dataset
+dataset = test_dataset
 batch_sz = BSZ
 device = 'cuda'
 step_sz = 0.05
@@ -322,9 +350,10 @@ batch_sampler = OdinSamplerRB(art_model, dataset, batch_sz,
 batch_sampler.update_local(art_model, temperature)
 
 
-# for i, batch_indices in enumerate(batch_sampler):
-#     batch_x, batch_xs, batch_y = torch.stack([dataset[idx][0] for idx in batch_indices]), torch.stack([dataset[idx][0] for idx in batch_indices]), torch.tensor([dataset[idx][2] for idx in batch_indices])
-#     x,y = batch_x.cuda(), batch_y.cuda()
+for i, batch_indices in enumerate(batch_sampler):
+    batch_x, batch_y = torch.stack([dataset[idx][0] for idx in batch_indices]), torch.tensor([dataset[idx][1] for idx in batch_indices])
+    x,y = batch_x.cuda(), batch_y.cuda()
+    break
 #     # print(batch_sampler.sampling_probs.mean(), batch_sampler.sampling_probs.std())
 #     # print(batch_sampler.count_dict_new)
 

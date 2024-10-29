@@ -8,7 +8,10 @@ from collections import OrderedDict
 
 from utils import drop_connect
 from pretrained_models import *
-
+# from pacs_ds import class_names
+# from kaokore_ds import class_names
+# from wikiart_ds import class_names
+from wikiart_emotions_ds import class_names
 
 #previous best
 class AttnResNet(nn.Module): #the vgg n densnet versions
@@ -96,19 +99,14 @@ class AttnResNet(nn.Module): #the vgg n densnet versions
 
 # old best model
 FFINETUNE = False
-NUM_CLASSES = 4
+DS_NAME = ['Kaokore', 'PACS', 'WikiArt'][1]
+
+NUM_CLASSES = len(class_names)
+print('Num classes',NUM_CLASSES, class_names)
+
 DROPOUT_P = 0.23
 DROPOUT_TYPE = 'dropout'
-LR = 0.00008
 DROPOUT_P = 0.23
-WD = 0.0004
-MODEL = 'resnet152'
-DATASET = 'kaokore'
-BATCH_SIZE = 32
-NUM_WORKERS = 8
-EPOCHS = 20
-p1, p2 = [0.8, 0.2]
-REG_TYPE = 'L2'
 
 stclf_model = AttnResNet(NUM_CLASSES,
                             ResNetN('resnet50','avgpool',
