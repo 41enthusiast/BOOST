@@ -43,6 +43,7 @@ Install dependencies with:
 
 ```bash
 pip install -r requirements.txt
+```
 
 ###  How to train a model on the Kaokore dataset and get the performance results
 python -m main
