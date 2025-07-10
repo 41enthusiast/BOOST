@@ -14,20 +14,15 @@ from torch.utils.data import Subset
 
 # from wikiart_ds import *
 # from kaokore_ds import *
-from pacs_ds import *
-from stclf_model import *
-from sampler_utils import *
-from utils import *
+from datasets_code.pacs_ds import *
+from models.stclf_model import *
+from sampler.sampler_utils import *
+from utils.utils import *
+import importlib
+import argparse
 
-num_epochs = 50
-MODEL_TYPE = 'stsaclf'
-SAMPLER_TYPE = 'random'
-RUN = 23
-BEST_RUN = 8
-device = 'cuda'
-dataset = test_dataset
-data_loader = test_loader_out
-train_dataset = train_dataset
+
+
 
 def new_ood_score_calculation(pred_scores, pred_labels, true_labels):
     """
@@ -71,12 +66,12 @@ def new_ood_score_calculation(pred_scores, pred_labels, true_labels):
     return total_ood_score, classwise_ood_score
 
 
-def train_with_odin(model, dataset, totl_labels, temperature, save_path, extended_epochs):
+def train_with_odin(model, dataset, totl_labels, temperature, save_path, extended_epochs, BSZ, step_sz, test_loader_out, norm_std):
     
     data_subset = dataset
     batch_sz = BSZ
     
-    batch_sampler = OdinSamplerRB(model, data_subset, totl_labels, batch_sz,
+    batch_sampler = BOOST(model, 'multiple_outputs', data_subset, totl_labels, batch_sz,
             step_sz, F.nll_loss, temperature, norm_std)
     batch_sampler.update_local(model, temperature)
     lr = 0.00008
@@ -87,7 +82,7 @@ def train_with_odin(model, dataset, totl_labels, temperature, save_path, extende
         lr_lambda=lambda step: cosine_annealing(
             step,
             # epochs * len(train_loader_out),
-            num_epochs * len(train_dataset)//batch_sz,
+            epochs * len(train_dataset)//batch_sz,
             1,  # since lr_lambda computes multiplicative factor
             1e-6 / lr))
     
@@ -103,10 +98,10 @@ def train_with_odin(model, dataset, totl_labels, temperature, save_path, extende
     for epoch in range(epochs):
         model.train()
         #TRAINING PHASE
-        # for i, batch_indices in enumerate(batch_sampler):
-        #     batch_x, batch_y = torch.stack([data_subset[idx][0] for idx in batch_indices]), torch.tensor([dataset[idx][1] for idx in batch_indices])
-        #     x, y = batch_x.cuda(), batch_y.cuda()
-        for x, y, _ in train_loader_rs:
+        for i, batch_indices in enumerate(batch_sampler):
+            batch_x, batch_y = torch.stack([data_subset[idx][0] for idx in batch_indices]), torch.tensor([dataset[idx][1] for idx in batch_indices])
+            x, y = batch_x, batch_y
+        # for x, y, _ in train_loader_rs:
             outputs = model(x.to(device))
             if isinstance(outputs, list):
                 out = outputs[0]
@@ -124,16 +119,11 @@ def train_with_odin(model, dataset, totl_labels, temperature, save_path, extende
         # all_scores = []
         with torch.no_grad():
             for inputs, labels, _ in test_loader_out:
-                if MODEL_TYPE == 'simple_odin':
-                    outputs = model(inputs.cuda())
+                outputs = model(inputs.cuda())
+                if isinstance(outputs, list):
                     all_outputs.append(outputs[0])
-                    _, preds = torch.max(outputs, 1)
-                elif MODEL_TYPE == 'stsaclf':
-                    outputs = model(inputs.cuda())
-                    if isinstance(outputs, list):
-                        all_outputs.append(outputs[0])
-                    # scores = F.softmax(outputs[0])
-                    preds = outputs[0].argmax(dim=1)
+                # scores = F.softmax(outputs[0])
+                preds = outputs[0].argmax(dim=1)
                 
                 all_labels.extend(labels.numpy())
                 all_preds.extend(preds.cpu().numpy())
@@ -159,7 +149,7 @@ def train_with_odin(model, dataset, totl_labels, temperature, save_path, extende
         all_preds, all_labels = np.array(all_preds), np.array(all_labels)
         kaokore_status_class_names = class_names
         cls_metrics = {'accuracy':{}, 'f1':{}, 'precision':{}, 'recall':{},
-                        'auroc':{}, 'fpr95': {}}
+                        }
         for cls in set(all_labels):
             lbls = np.where(all_labels == cls, np.ones_like(all_labels), np.zeros_like(all_labels))
             preds = np.where(all_preds == cls, np.ones_like(all_preds), np.zeros_like(all_preds))  
@@ -168,10 +158,6 @@ def train_with_odin(model, dataset, totl_labels, temperature, save_path, extende
             cls_metrics['precision'][kaokore_status_class_names[cls]] = precision_score(lbls, preds)
             cls_metrics['recall'][kaokore_status_class_names[cls]] = recall_score(lbls, preds)
             
-            #this forces the OvR based OOD metrics to be calculated - may not be a great idea
-            cls_metrics['auroc'][kaokore_status_class_names[cls]] = binary_auroc(all_outputs[:,cls], Tensor(lbls).int().to(device))
-            cls_metrics['fpr95'][kaokore_status_class_names[cls]] = fpr_at_tpr(all_outputs[:,cls], Tensor(lbls).int().to(device))
-            
         for metric in cls_metrics.keys():
             for cls in cls_metrics[metric].keys():
                 wandb.log({f'{metric}_{cls}': cls_metrics[metric][cls]*100, 'epoch': epoch})
@@ -179,16 +165,12 @@ def train_with_odin(model, dataset, totl_labels, temperature, save_path, extende
         if best_acc == accuracy:
             print('Saving best model and sampling weights')
             torch.save(model.state_dict(), f'{save_path}/best_model_ft_{MODEL_TYPE}_{SAMPLER_TYPE}.pth')
-        
-        
-
-        if SAMPLER_TYPE == 'odin':
             
-            if epoch %5 == 0:
-                temperature *= 5
-                batch_sampler.update_local(model, temperature)
-                # batch_sampler.temperature = cosine_annealing(epoch, len(train_dataset)//batch_sz, 0, 1000)
-                temps.append(temperature)
+        if epoch %5 == 0:
+            temperature *= 5
+            batch_sampler.update_local(model, temperature)
+            # batch_sampler.temperature = cosine_annealing(epoch, len(train_dataset)//batch_sz, 0, 1000)
+            temps.append(temperature)
     print(best_stats)
     return model
 
@@ -225,8 +207,8 @@ def visualize_classwise_samples(results):
             plt.axis('off')
             plt.show()
 
-def ood_scores_bias_metrics(model, dataloader, train_dataset, device, temperature_scale_factor, epoch, totl_labels):
-    model_path = f'saves/ood_art_tests_v2/experiment_{RUN}/model_{MODEL_TYPE}_{SAMPLER_TYPE}_{epoch}.pth'
+def ood_scores_bias_metrics(model, dataloader, train_dataset, device, temperature_scale_factor, EXP_NUM, RUN, totl_labels, BSZ, step_sz, test_dl, norm_std):
+    model_path = f'saves/ood_art_tests_v2/experiment_{EXP_NUM}/model_{MODEL_TYPE}_{SAMPLER_TYPE}_{RUN}.pth'
     model.load_state_dict(torch.load(model_path))
     
     misclass_only = False
@@ -237,7 +219,7 @@ def ood_scores_bias_metrics(model, dataloader, train_dataset, device, temperatur
     if misclass_only:
         train_dataset = dataset
     model = train_with_odin(model, train_dataset, totl_labels,
-                            temperature_scale_factor**(epoch//5), save_model_path, extra_epochs)
+                            temperature_scale_factor**(RUN//5), save_model_path, extra_epochs, BSZ, step_sz, test_dl, norm_std)
     
     totl_lbls = []
     totl_preds = []
@@ -267,7 +249,7 @@ def ood_scores_bias_metrics(model, dataloader, train_dataset, device, temperatur
     
     print('OOD scores bias calculation')
     ood_score, classwise_scores = new_ood_score_calculation(totl_pred_scores, totl_preds, totl_lbls)
-    wandb.log({'ood_score_new': ood_score*100, 'epoch': epoch})
+    wandb.log({'ood_score_new': ood_score*100, 'epoch': RUN})
     
     mab, sdb = calculate_mab_sdb(classwise_scores) 
     print('MAB:', mab, 'SDB:', sdb)
@@ -300,32 +282,8 @@ def calculate_mab_sdb(performance_metrics):
     
     return mab, sdb
 
-
-fig, ax = plt.subplots()
-# Function to update histogram
-def update_histogram(frame):
-    ax.clear()
-    epoch_data = change_hist[frame]
-    clses = list(epoch_data.keys())
-    bars = ax.bar(clses, epoch_data)
-    ax.set_title(f'Barchart of Changed Indices - Epoch {frame+1}')
-    ax.set_xlabel('Class')
-    ax.set_ylabel('Frequency')
     
-    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
-    
-    # Add value labels on top of each bar
-    for bar in bars:
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height}', ha='center', va='bottom')
-    
-    ax.legend()
-    
-    return bars
-
-    
-def get_best_performance_metrics(model, dataloader, device):
+def get_best_performance_metrics(model, dataloader, device, RUN, test_loader_out):
     model_path = f'saves/ood_art_tests_v2/experiment_{RUN}/best_model_{MODEL_TYPE}_{SAMPLER_TYPE}.pth'
     model.eval()
     model.load_state_dict(torch.load(model_path))
@@ -380,105 +338,60 @@ def get_best_performance_metrics(model, dataloader, device):
     mab, sdb = calculate_mab_sdb(cls_recall)
     print('Recall MAB:', mab, 'SDB:', sdb)
     wandb.log({'best_recall_mab': mab, 'best_recall_sdb': sdb})
-    
-
-
-def find_changed_predictions(model, dataloader, device):
-    model.eval()
-    prev_preds = None
-    changed_samples = []
-    changes_per_class = {i: {} for i in range(NUM_CLASSES)}
-    root_path = f'saves/ood_art_tests_v2/experiment_{RUN}' #f'../ood_art_tests_experimental/ood_art_tests/saves/'
-    track_changes_per_class = [{i: 0 for i in range(NUM_CLASSES)}]
-    
-    with torch.no_grad():
-        for epoch in range(num_epochs):
-            current_preds = []
-            current_labels = []
-            model.load_state_dict(torch.load(f"{root_path}/model_{MODEL_TYPE}_{SAMPLER_TYPE}_{epoch}.pth"))
-            
-            for inputs, labels in dataloader:
-                inputs = inputs.to(device)
-                outputs = model(inputs)
-                _, preds = torch.max(outputs[0], 1)
-                current_preds.extend(preds.cpu().numpy())
-                current_labels.extend(labels.cpu().numpy())
-            
-            #working with changing samples only
-            if prev_preds is not None:
-                current_p, current_l = np.array(current_preds), np.array(current_labels)
-                changed = np.where( current_p != np.array(prev_preds))[0]
-                changed_l, changed_p = current_l[changed], current_p[changed]
-                print(len(changed_p), len(changed_l), changed_l, changed_p)
-                changed_samples.extend(changed)
-                for i in changed:
-                    if i not in changes_per_class[int(test_dataset[i][1])]:
-                        changes_per_class[int(test_dataset[i][1])][i] = 1
-                    else:
-                        changes_per_class[int(test_dataset[i][1])][i] += 1
-                    track_changes_per_class[-1][int(test_dataset[i][1])] += 1
-                
-                print(f"Epoch {epoch}: {len(changed)} samples changed predictions")
-                print(f"Changes per class: {track_changes_per_class[-1]}")
-                print(f"Current Epoch stats: Acc: {accuracy_score(changed_p, changed_l)*100}, F1: {f1_score(changed_p, changed_l, average='macro')*100}, Pre: {precision_score(changed_p, changed_l, average='macro')*100}, Rec: {recall_score(changed_p, changed_l, average='macro')*100}")
-                wandb.log({'changed_accuracy': accuracy_score(changed_p, changed_l)*100, 'epoch': epoch})
-                wandb.log({'changed_f1': f1_score(changed_p, changed_l, average='macro')*100, 'epoch': epoch})
-                wandb.log({'changed_precision': precision_score(changed_p, changed_l, average='macro')*100, 'epoch': epoch})
-                wandb.log({'changed_recall': recall_score(changed_p, changed_l, average='macro')*100, 'epoch': epoch})
-                
-                
-                track_changes_per_class.append({i: 0 for i in range(NUM_CLASSES)})
-
-            prev_preds = current_preds
-            
-    return list(set(changed_samples)), changes_per_class, track_changes_per_class  # Unique samples that changed
 
 def get_image(index, dataset):
     img, _ = dataset[index]
     return img
 
-def get_changed_images_grid(changed_indices, dataset, num_cols, rev = True):
+def parse_args():
+    parser = argparse.ArgumentParser(description="BOOST Image Classification Training")
+
+    parser.add_argument('--batch_sz', type=int, default=32,
+                        help='Batch size for training (default: 32)')
     
-    fig, axes = plt.subplots(num_cols//4, 4, figsize=(12, 6))
-    fig.suptitle(f"Top {num_cols} Images by Changed Index Frequency")
-    flag = 'In_Descending_Order__' if rev else 'In_Ascending_Order__'
+    parser.add_argument('--dataset', type=str, default='kaokore', choices=['kaokore', 'pacs', 'custom_imgnet_style'],
+                        help='Dataset name (default: kaokore)')
     
-    for cls in range(NUM_CLASSES):
-        print(changed_indices[cls])
-        top_indices = sorted(changed_indices[cls], key=changed_indices[cls].get, reverse=rev)[:num_cols]
-        for i, ax in enumerate(axes.flat):
-            img = get_image(top_indices[i], dataset)
-            ax.imshow(img.permute(1, 2, 0))
-            ax.axis('off')
-            ax.set_title(f"Index: {top_indices[i]}\nFreq: {changed_indices[cls][top_indices[i]]}")
-        plt.tight_layout()
-        plt.savefig(f'saves/misc/changed_indices_images_{MODEL_TYPE}_{SAMPLER_TYPE}_run_{RUN}.png')
-        wandb.log({flag+f"Class_{cls}_changed_indices_images": wandb.Image(f'saves/misc/changed_indices_images_{MODEL_TYPE}_{SAMPLER_TYPE}_run_{RUN}.png')})  
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
+                        choices=['cuda', 'cpu'],
+                        help='Computation device (default: auto-detect)')
 
-# Usage
-wandb.init(project="ood_arts_model_classifier_animation")
-model = stclf_model.to(device)
+    parser.add_argument('--epochs', type=int, default=50,
+                        help='Number of training epochs (default: 50)')
 
-get_best_performance_metrics(model, data_loader, device)
+    return parser.parse_args()
 
-ood_scores_bias_metrics(model, data_loader, train_dataset, device, 2, BEST_RUN, totl_labels)
-# visualize_classwise_samples(results)
+if __name__ == "__main__":
+    # Usage
+    wandb.init(project="BOOST_inference")
+    
+    args = parse_args()
+    device = args.device
+    
+    dataset_module = importlib.import_module(f'data.{args.dataset}_ds')
+    train_dataset, dataset, data_loader, totl_labels, class_names, norm_std = dataset_module.dataset_details()
+  
+    
+    MODEL_TYPE = 'stsaclf'
+    SAMPLER_TYPE = 'random'
+    NUM_CLASSES = len(class_names)
+    FFINETUNE = False
+    DROPOUT_TYPE = 'dropout'
+    DROPOUT_P = 0.23
+    EXP_NUM = 1
+    BEST_RUN = 8
+    BSZ = args.batch_sz
+    step_sz = 0.05
+    
+    model = AttnResNet(NUM_CLASSES,
+                            ResNetN('resnet50','avgpool',
+                                ['conv1', 'layer2','layer3','layer4'],
+                                FFINETUNE),
+                            DROPOUT_TYPE,
+                            DROPOUT_P).to(device)
 
-# changed_indices, tracked_changes, change_hist = find_changed_predictions(model, data_loader, device)
+    get_best_performance_metrics(model, data_loader, device, BEST_RUN, data_loader, )
 
-# get_ood_dets(model, data_loader, device, NUM_CLASSES)   
+    ood_scores_bias_metrics(model, data_loader, train_dataset, device, 5, EXP_NUM, BEST_RUN, totl_labels, BSZ, step_sz, data_loader, norm_std)
 
-# print(f"Total samples that changed predictions: {len(changed_indices)}")
-
-# print('Making animation of changing indices across epochs')
-# anim = animation.FuncAnimation(fig, update_histogram, frames=num_epochs, interval=1000, blit = False)
-# anim.save('saves/misc/changed_indices_animation.mp4', writer='ffmpeg', fps = 1)
-# wandb.log({"changed_indices_animation": wandb.Video('saves/misc/changed_indices_animation.mp4')})
-
-# print('Getting the most changed images')
-# get_changed_images_grid(tracked_changes, test_dataset, 16)
-
-# print('Getting the least changed images')
-# get_changed_images_grid(tracked_changes, test_dataset, 16, rev = False)
-
-wandb.finish()
+    wandb.finish()
