@@ -46,4 +46,7 @@ pip install -r requirements.txt
 ```
 
 ###  How to train a model on the Kaokore dataset and get the performance results
+
+```bash
 python -m main
+```
